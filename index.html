@@ -1643,6 +1643,8 @@ function getSheetData(ss, name) {
 
     let html5QrCodeInstance = null;
     let isPushingKehadiranDelete = false;
+    let fastBarcodeDetector = null;
+    let fastScanRafId = null;
     function getEffectiveGasUrl() {
       const hardcodedUrl = (typeof DEFAULT_GAS_WEB_APP_URL === 'string' && DEFAULT_GAS_WEB_APP_URL.trim() !== "" && !DEFAULT_GAS_WEB_APP_URL.includes("PASTE_URL_WEB_APP_ANDA_DI_SINI"))
         ? DEFAULT_GAS_WEB_APP_URL.trim()
@@ -2091,12 +2093,7 @@ function getSheetData(ss, name) {
       fallbackMsg.classList.add('hidden');
 
       const scannerConfig = {
-        fps: 25,
-        qrbox: (viewfinderWidth, viewfinderHeight) => {
-          const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
-          const size = Math.max(180, Math.floor(minEdge * 0.72));
-          return { width: size, height: size };
-        },
+        fps: 30,
         aspectRatio: 1.0,
         disableFlip: false,
         experimentalFeatures: {
@@ -2122,6 +2119,7 @@ function getSheetData(ss, name) {
         // Jika kamera sudah aktif dan hanya dijeda (paused), langsung lanjutkan tanpa membuka ulang stream
         if (html5QrCodeInstance.getState && html5QrCodeInstance.getState() === 3) {
           await html5QrCodeInstance.resume();
+          startNativeFastDetectorLoop();
           return;
         }
 
@@ -2143,6 +2141,7 @@ function getSheetData(ss, name) {
             onQrCodeScanned,
             () => {}
           );
+          startNativeFastDetectorLoop();
         } else {
           camSelect.innerHTML = `<option value="">Kamera tidak ditemukan</option>`;
           fallbackMsg.classList.remove('hidden');
@@ -2150,6 +2149,44 @@ function getSheetData(ss, name) {
       } catch (err) {
         console.warn("Kamera tidak dapat diakses:", err);
         fallbackMsg.classList.remove('hidden');
+      }
+    }
+
+    function startNativeFastDetectorLoop() {
+      stopNativeFastDetectorLoop();
+      if (!('BarcodeDetector' in window)) return;
+
+      try {
+        if (!fastBarcodeDetector) {
+          fastBarcodeDetector = new window.BarcodeDetector({ formats: ['qr_code'] });
+        }
+      } catch (e) {
+        return;
+      }
+
+      const scanFrame = async () => {
+        if (!isScannerProcessing && state.activeSession) {
+          const videoEl = document.querySelector('#qr-reader video');
+          if (videoEl && videoEl.readyState >= 2 && !videoEl.paused) {
+            try {
+              const barcodes = await fastBarcodeDetector.detect(videoEl);
+              if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
+                onQrCodeScanned(barcodes[0].rawValue);
+                return;
+              }
+            } catch (_) {}
+          }
+        }
+        fastScanRafId = requestAnimationFrame(scanFrame);
+      };
+
+      fastScanRafId = requestAnimationFrame(scanFrame);
+    }
+
+    function stopNativeFastDetectorLoop() {
+      if (fastScanRafId) {
+        cancelAnimationFrame(fastScanRafId);
+        fastScanRafId = null;
       }
     }
 
@@ -2169,19 +2206,18 @@ function getSheetData(ss, name) {
       await html5QrCodeInstance.start(
         availableCameras[currentCameraIndex].id,
         {
-          fps: 25,
-          qrbox: (w, h) => {
-            const size = Math.max(180, Math.floor(Math.min(w, h) * 0.72));
-            return { width: size, height: size };
-          },
+          fps: 30,
+          disableFlip: false,
           experimentalFeatures: { useBarCodeDetectorIfSupported: true }
         },
         onQrCodeScanned,
         () => {}
       );
+      startNativeFastDetectorLoop();
     }
 
     function pauseQrScanner() {
+      stopNativeFastDetectorLoop();
       try {
         if (html5QrCodeInstance && html5QrCodeInstance.isScanning && html5QrCodeInstance.getState && html5QrCodeInstance.getState() === 2) {
           html5QrCodeInstance.pause(true);
@@ -2192,6 +2228,7 @@ function getSheetData(ss, name) {
     }
 
     async function stopQrScanner() {
+      stopNativeFastDetectorLoop();
       try {
         if (html5QrCodeInstance) {
           const stateCode = html5QrCodeInstance.getState ? html5QrCodeInstance.getState() : 0;
@@ -2202,6 +2239,23 @@ function getSheetData(ss, name) {
       } catch (e) {
         console.warn("Stop scanner info:", e);
       }
+    }
+
+    function normalizeRuangString(ruangVal) {
+      const raw = String(ruangVal || '').trim().toLowerCase();
+      if (!raw) return '';
+      const numMatch = raw.match(/\d+/);
+      if (numMatch) {
+        return `ruang-${parseInt(numMatch[0], 10)}`;
+      }
+      return raw.replace(/\s+/g, '-');
+    }
+
+    function handleScanOk() {
+      document.getElementById('scan-result-card').classList.add('hidden');
+      document.getElementById('scanner-camera-box').classList.remove('hidden');
+      isScannerProcessing = false;
+      startQrScanner();
     }
 
     function stopScannerAndBack() {
